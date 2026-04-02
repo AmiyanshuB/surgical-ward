@@ -304,15 +304,28 @@ router.post('/:id/notes', async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
   const {
-    status_summary, intake_ml, output_ml, io_comment, exam_text,
+    status_summary, io_comment, exam_text,
     device_summary, labs_imaging_update, medication_notes, nutrition_notes,
     plan_24h, risk_override,
-    // Optional vitals in the note
     hr, systolic_bp, diastolic_bp, rr, spo2, temp_c, uop_ml, glucose, lactate,
-    // Optional flags
     new_flags = [],
     resolve_flags = [],
   } = req.body;
+
+  // Helper: convert empty string / undefined / NaN to null for DB integer/numeric columns
+  const toInt = (v) => {
+    if (v === '' || v === undefined || v === null) return null;
+    const n = parseInt(v);
+    return isNaN(n) ? null : n;
+  };
+  const toFloat = (v) => {
+    if (v === '' || v === undefined || v === null) return null;
+    const n = parseFloat(v);
+    return isNaN(n) ? null : n;
+  };
+
+  const intake_ml  = toInt(req.body.intake_ml);
+  const output_ml  = toInt(req.body.output_ml);
 
   try {
     // Get active encounter
@@ -331,18 +344,32 @@ router.post('/:id/notes', async (req, res) => {
         plan_24h, risk_override
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
       RETURNING *
-    `, [id, encounterId, userId, status_summary, intake_ml, output_ml, io_comment, exam_text,
-        device_summary, labs_imaging_update, medication_notes, nutrition_notes, plan_24h,
-        risk_override || null]);
+    `, [
+      id, encounterId, userId,
+      status_summary || null,
+      intake_ml, output_ml,
+      io_comment || null, exam_text || null,
+      device_summary || null, labs_imaging_update || null,
+      medication_notes || null, nutrition_notes || null,
+      plan_24h || null,
+      risk_override || null
+    ]);
 
     const note = noteRes.rows[0];
 
-    // Save vitals if provided
-    if (hr || systolic_bp || spo2) {
+    // Save vitals if any provided
+    const hrVal  = toInt(hr);
+    const sbpVal = toInt(systolic_bp);
+    const spo2Val = toFloat(spo2);
+    if (hrVal || sbpVal || spo2Val) {
       await query(`
-        INSERT INTO vital_snapshots (patient_id, encounter_id, hr, systolic_bp, diastolic_bp, rr, spo2, temp_c, uop_ml, glucose, lactate, recorded_by_user_id)
+        INSERT INTO vital_snapshots
+          (patient_id, encounter_id, hr, systolic_bp, diastolic_bp, rr, spo2, temp_c, uop_ml, glucose, lactate, recorded_by_user_id)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      `, [id, encounterId, hr||null, systolic_bp||null, diastolic_bp||null, rr||null, spo2||null, temp_c||null, uop_ml||null, glucose||null, lactate||null, userId]);
+      `, [id, encounterId,
+          hrVal, sbpVal, toInt(diastolic_bp), toInt(rr),
+          spo2Val, toFloat(temp_c), toInt(uop_ml),
+          toFloat(glucose), toFloat(lactate), userId]);
     }
 
     // Add new flags
@@ -369,8 +396,8 @@ router.post('/:id/notes', async (req, res) => {
 
     res.status(201).json(note);
   } catch (err) {
-    console.error('POST /notes error:', err);
-    res.status(500).json({ error: 'Failed to save note' });
+    console.error('POST /notes error:', err.message);
+    res.status(500).json({ error: 'Failed to save note', detail: err.message });
   }
 });
 
