@@ -3,17 +3,24 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
-// Parse the DATABASE_URL to extract the DB name and build a postgres-level URL
 const dbUrl = new URL(process.env.DATABASE_URL);
-const dbName = dbUrl.pathname.slice(1); // e.g. "surgical_ward"
+const dbName = dbUrl.pathname.slice(1);
 
-// Connect to the default "postgres" database to create our DB if needed
 const adminUrl = new URL(process.env.DATABASE_URL);
 adminUrl.pathname = '/postgres';
 
+// Always use SSL with rejectUnauthorized: false for online/cloud PostgreSQL servers
+const SSL = { rejectUnauthorized: false };
+
 async function migrate() {
-  // Step 1: create DB if it doesn't exist
-  const adminPool = new Pool({ connectionString: adminUrl.toString(), ssl: false });
+  console.log(`🔗 Connecting to: ${adminUrl.hostname}`);
+
+  // Step 1: Create DB if it doesn't exist
+  const adminPool = new Pool({
+    connectionString: adminUrl.toString(),
+    ssl: SSL,
+  });
+
   try {
     await adminPool.query(`CREATE DATABASE "${dbName}"`);
     console.log(`✅ Database "${dbName}" created`);
@@ -28,8 +35,12 @@ async function migrate() {
     await adminPool.end();
   }
 
-  // Step 2: run schema migrations on the actual DB
-  const appPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
+  // Step 2: Run schema on the app database
+  const appPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: SSL,
+  });
+
   const sql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   try {
     await appPool.query(sql);

@@ -8,16 +8,27 @@ const adminRoutes = require('./modules/admin/adminRoutes');
 
 const app = express();
 
-// Middleware
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-  credentials: true,
-}));
+// CORS — completely open, log every request
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(express.json());
 
-// Request logging
+// Detailed request logging
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  const start = Date.now();
+  console.log(`\n→ ${req.method} ${req.path}`);
+  console.log(`  Auth header: ${req.headers.authorization ? req.headers.authorization.slice(0,30)+'...' : 'MISSING'}`);
+  res.on('finish', () => {
+    console.log(`  ← ${res.statusCode} (${Date.now()-start}ms)`);
+  });
   next();
 });
 
@@ -26,7 +37,7 @@ app.use('/auth', authRoutes);
 app.use('/patients', patientRoutes);
 app.use('/admin', adminRoutes);
 
-// Health check
+// Health check — no auth required
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 // 404
@@ -34,14 +45,16 @@ app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 
 // Error handler
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Internal server error' });
+  console.error('💥 Unhandled error:', err.message);
+  console.error(err.stack);
+  res.status(500).json({ error: 'Internal server error', detail: err.message });
 });
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`\n🏥 Surgical Ward API running on port ${PORT}`);
-  console.log(`   Health: http://localhost:${PORT}/health\n`);
+  console.log(`   CORS: manual headers, all origins`);
+  console.log(`   DB: ${process.env.DATABASE_URL?.replace(/:.*@/, ':***@')}\n`);
 });
 
 module.exports = app;
