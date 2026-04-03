@@ -206,7 +206,7 @@ export default function PatientDetailPage() {
         {/* Left column (2/3) */}
         <div className="lg:col-span-2 space-y-5">
           {/* Vitals Panel — radar chart + history */}
-          <VitalsPanel patientId={id} latestVitals={v && Object.keys(v).length ? v : null} />
+          <VitalsPanel patientId={id} patientName={patient.full_name} latestVitals={v && Object.keys(v).length ? v : null} />
 
           {/* I/O + Red Flags row */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../../lib/api';
 import { Spinner, formatDateTime } from '../../components/ui';
+import VitalsOCRModal from './VitalsOCRModal';
 
 // ─── Radar Chart (pure SVG, no library needed) ────────────────────────────────
 
@@ -369,20 +370,30 @@ function AddVitalsForm({ patientId, onSaved }) {
 
 // ─── Main Export ──────────────────────────────────────────────────────────────
 
-export default function VitalsPanel({ patientId, latestVitals }) {
+export default function VitalsPanel({ patientId, patientName, latestVitals }) {
   const [view, setView] = useState('chart'); // 'chart' | 'history'
+  const [showOCR, setShowOCR] = useState(false);
   const qc = useQueryClient();
 
   const { data: history = [], isLoading } = useQuery({
     queryKey: ['vitals-history', patientId],
-    queryFn: () => api.get(`/patients/${patientId}/vitals/history?limit=30`).then(r => r.data),
+    queryFn: () => api.get(`/patients/${patientId}/vitals/history?limit=60`).then(r => r.data),
   });
 
   return (
     <div className="section-card">
       <div className="section-header">
         <h3 className="section-title">Vitals Analytics</h3>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {/* OCR import button */}
+          <button
+            onClick={() => setShowOCR(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg px-3 py-1.5 transition-colors"
+            title="Import vitals from a photo of the paper register"
+          >
+            <span>📷</span>
+            Import from Photo
+          </button>
           <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
             <button onClick={() => setView('chart')}
               className={`px-3 py-1.5 transition-colors ${view === 'chart' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
@@ -429,6 +440,19 @@ export default function VitalsPanel({ patientId, latestVitals }) {
           </div>
         )}
       </div>
+
+      {showOCR && (
+        <VitalsOCRModal
+          patientId={patientId}
+          patientName={patientName}
+          onClose={() => setShowOCR(false)}
+          onSaved={() => {
+            setShowOCR(false);
+            setView('history');
+            qc.invalidateQueries(['vitals-history', patientId]);
+          }}
+        />
+      )}
     </div>
   );
 }

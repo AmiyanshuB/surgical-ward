@@ -5,30 +5,26 @@ const cors = require('cors');
 const authRoutes = require('./modules/auth/authRoutes');
 const patientRoutes = require('./modules/patients/patientRoutes');
 const adminRoutes = require('./modules/admin/adminRoutes');
+const ocrRoutes = require('./modules/ocr/ocrRoutes');
 
 const app = express();
 
-// CORS — completely open, log every request
+// CORS — completely open
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '15mb' }));
 
-// Detailed request logging
+// Request logging
 app.use((req, res, next) => {
   const start = Date.now();
-  console.log(`\n→ ${req.method} ${req.path}`);
-  console.log(`  Auth header: ${req.headers.authorization ? req.headers.authorization.slice(0,30)+'...' : 'MISSING'}`);
-  res.on('finish', () => {
-    console.log(`  ← ${res.statusCode} (${Date.now()-start}ms)`);
-  });
+  console.log(`→ ${req.method} ${req.path}`);
+  res.on('finish', () => console.log(`  ← ${res.statusCode} (${Date.now() - start}ms)`));
   next();
 });
 
@@ -36,8 +32,9 @@ app.use((req, res, next) => {
 app.use('/auth', authRoutes);
 app.use('/patients', patientRoutes);
 app.use('/admin', adminRoutes);
+app.use('/ocr', ocrRoutes);
 
-// Health check — no auth required
+// Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 // 404
@@ -46,15 +43,13 @@ app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 // Error handler
 app.use((err, req, res, next) => {
   console.error('💥 Unhandled error:', err.message);
-  console.error(err.stack);
   res.status(500).json({ error: 'Internal server error', detail: err.message });
 });
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`\n🏥 Surgical Ward API running on port ${PORT}`);
-  console.log(`   CORS: manual headers, all origins`);
-  console.log(`   DB: ${process.env.DATABASE_URL?.replace(/:.*@/, ':***@')}\n`);
+  console.log(`   OCR: ${process.env.ANTHROPIC_API_KEY ? '✅ enabled' : '❌ ANTHROPIC_API_KEY missing'}\n`);
 });
 
 module.exports = app;
