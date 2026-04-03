@@ -1,23 +1,60 @@
 const express = require('express');
 const multer = require('multer');
-const fetch = require('node-fetch');
+const https = require('https');
 const { query } = require('../../db/db');
 const { authenticate } = require('../../common/authMiddleware');
 
 const router = express.Router();
 router.use(authenticate);
 
-// Store image in memory (no disk write needed)
+// Store image in memory
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
     else cb(new Error('Only image files allowed'));
   },
 });
 
-// POST /ocr/vitals - extract vitals from photo of paper register
+// Helper: call Anthropic API using native https (no node-fetch needed)
+function callAnthropic(apiKey, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const options = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch (e) {
+          resolve({ status: res.statusCode, body: data });
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.setTimeout(90000, () => {
+      req.destroy(new Error('Anthropic API request timed out after 90s'));
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// POST /ocr/vitals - extract vitals from photo
 router.post('/vitals', upload.single('image'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No image uploaded' });
@@ -32,90 +69,81 @@ router.post('/vitals', upload.single('image'), async (req, res) => {
     const base64Image = req.file.buffer.toString('base64');
     const mediaType = req.file.mimetype;
 
-    console.log(`OCR request: ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)}KB)`);
+    console.log(`OCR request: ${req.file.originalname || 'image'} (${(req.file.size / 1024).toFixed(0)}KB)`);
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-opus-4-5',
-        max_tokens: 2000,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: mediaType,
-                  data: base64Image,
-                },
+    const result = await callAnthropic(apiKey, {
+      model: 'claude-sonnet-4-5',
+      max_tokens: 2000,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: mediaType,
+                data: base64Image,
               },
-              {
-                type: 'text',
-                text: `You are a medical data extraction assistant. This is a photo of a surgical ward patient vitals register or chart.
+            },
+            {
+              type: 'text',
+              text: `You are a medical data extraction assistant. This is a photo of a surgical ward patient vitals register or chart.
 
 Extract ALL vitals entries you can see. For each row/entry, extract:
-- date (in YYYY-MM-DD format if possible, otherwise as written)
-- time (HH:MM 24h format if visible, otherwise null)
-- hr (heart rate, integer, beats per minute)
-- systolic_bp (systolic blood pressure, integer, mmHg)
-- diastolic_bp (diastolic blood pressure, integer, mmHg)
-- rr (respiratory rate, integer, breaths per minute)
-- spo2 (oxygen saturation, number, percentage 0-100)
-- temp_c (temperature in Celsius, number - convert from F if needed: (F-32)*5/9)
-- uop_ml (urine output in ml, integer)
-- glucose (blood glucose, number, mmol/L - if in mg/dL divide by 18)
-- lactate (lactate level, number, mmol/L)
+- date (YYYY-MM-DD format)
+- time (HH:MM 24h format, null if not visible)
+- hr (heart rate integer, bpm)
+- systolic_bp (integer, mmHg)
+- diastolic_bp (integer, mmHg)
+- rr (respiratory rate integer, /min)
+- spo2 (number, %)
+- temp_c (number in Celsius — convert from F if needed: (F-32)*5/9)
+- uop_ml (urine output integer, ml)
+- glucose (number, mmol/L — if in mg/dL divide by 18)
+- lactate (number, mmol/L)
 
 Rules:
-- Only extract values you can actually read. Use null for anything unclear or not present.
-- If BP is written as "120/80", systolic=120 diastolic=80.
-- If temperature looks like it is in Fahrenheit (e.g. 98.6, 99, 100, 101), convert to Celsius.
-- If date is unclear but you can infer relative dates (Day 1, Day 2 etc), use today as reference.
+- Use null for anything unclear or not present.
+- If BP is written as 120/80, systolic=120 diastolic=80.
 - Extract every row you can see, even partial ones.
+- If year is not shown, assume 2024.
 
 Respond ONLY with a valid JSON array, no explanation, no markdown, no code blocks. Example:
-[
-  {"date":"2024-01-15","time":"08:00","hr":78,"systolic_bp":120,"diastolic_bp":80,"rr":16,"spo2":98,"temp_c":37.1,"uop_ml":350,"glucose":5.4,"lactate":1.2},
-  {"date":"2024-01-16","time":"08:30","hr":82,"systolic_bp":115,"diastolic_bp":75,"rr":18,"spo2":97,"temp_c":37.3,"uop_ml":300,"glucose":null,"lactate":null}
-]
+[{"date":"2024-01-15","time":"08:00","hr":78,"systolic_bp":120,"diastolic_bp":80,"rr":16,"spo2":98,"temp_c":37.1,"uop_ml":350,"glucose":5.4,"lactate":1.2}]
 
-If you cannot read any vitals at all, return an empty array: []`,
-              },
-            ],
-          },
-        ],
-      }),
+If no vitals found, return: []`,
+            },
+          ],
+        },
+      ],
     });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error('Claude API error:', errText);
-      return res.status(502).json({ error: 'Vision API error', detail: errText });
+    console.log(`Anthropic response status: ${result.status}`);
+
+    if (result.status !== 200) {
+      console.error('Anthropic API error:', JSON.stringify(result.body));
+      const errMsg = result.body?.error?.message || JSON.stringify(result.body);
+      return res.status(502).json({ error: `Vision API error: ${errMsg}` });
     }
 
-    const data = await response.json();
-    const rawText = data.content?.[0]?.text || '[]';
+    const rawText = result.body?.content?.[0]?.text || '[]';
+    console.log('Claude response preview:', rawText.slice(0, 150));
 
-    console.log('Claude raw response:', rawText.slice(0, 200));
-
-    // Parse JSON from response
     let vitalsRows = [];
     try {
-      const clean = rawText.trim().replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+      const clean = rawText.trim()
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
       vitalsRows = JSON.parse(clean);
       if (!Array.isArray(vitalsRows)) vitalsRows = [];
     } catch (parseErr) {
-      console.error('Failed to parse Claude response:', parseErr.message);
+      console.error('JSON parse failed:', parseErr.message, '| raw:', rawText.slice(0, 200));
       return res.status(422).json({
-        error: 'Could not parse vitals from image',
-        raw: rawText,
+        error: 'Could not parse vitals from image. Try a clearer photo.',
+        raw: rawText.slice(0, 300),
       });
     }
 
@@ -128,7 +156,7 @@ If you cannot read any vitals at all, return an empty array: []`,
   }
 });
 
-// POST /ocr/vitals/save - save confirmed OCR rows to DB for a specific patient
+// POST /ocr/vitals/save - save confirmed rows to DB
 router.post('/vitals/save', async (req, res) => {
   const { patient_id, rows } = req.body;
   const userId = req.user.id;
@@ -138,7 +166,6 @@ router.post('/vitals/save', async (req, res) => {
   }
 
   try {
-    // Get active encounter
     const encRes = await query(
       'SELECT id FROM encounters WHERE patient_id = $1 AND is_active = true LIMIT 1',
       [patient_id]
@@ -153,7 +180,6 @@ router.post('/vitals/save', async (req, res) => {
 
     for (const row of rows) {
       try {
-        // Build recorded_at from date + time
         let recordedAt = null;
         if (row.date) {
           const timeStr = row.time || '08:00';
@@ -166,8 +192,7 @@ router.post('/vitals/save', async (req, res) => {
              rr, spo2, temp_c, uop_ml, glucose, lactate, source, recorded_by_user_id)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'ocr',$13)
         `, [
-          patient_id, encounterId,
-          recordedAt,
+          patient_id, encounterId, recordedAt,
           toInt(row.hr), toInt(row.systolic_bp), toInt(row.diastolic_bp),
           toInt(row.rr), toFloat(row.spo2), toFloat(row.temp_c),
           toInt(row.uop_ml), toFloat(row.glucose), toFloat(row.lactate),
@@ -175,16 +200,17 @@ router.post('/vitals/save', async (req, res) => {
         ]);
         savedCount++;
       } catch (rowErr) {
+        console.error('Row save error:', rowErr.message);
         errors.push({ row, error: rowErr.message });
       }
     }
 
-    // Timeline event
     if (savedCount > 0) {
       await query(`
         INSERT INTO timeline_events (patient_id, encounter_id, event_type, actor_user_id, summary)
         VALUES ($1, $2, 'vital_update', $3, $4)
-      `, [patient_id, encounterId, userId, `${savedCount} historical vital readings imported from register photo`]);
+      `, [patient_id, encounterId, userId,
+          `${savedCount} historical vital reading${savedCount > 1 ? 's' : ''} imported from register photo`]);
     }
 
     res.json({ saved: savedCount, errors });
